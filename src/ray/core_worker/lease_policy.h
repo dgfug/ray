@@ -32,7 +32,8 @@ struct LocalityData {
 /// Interface for providers of locality data to the lease policy.
 class LocalityDataProviderInterface {
  public:
-  virtual absl::optional<LocalityData> GetLocalityData(const ObjectID &object_id) = 0;
+  virtual absl::optional<LocalityData> GetLocalityData(
+      const ObjectID &object_id) const = 0;
 
   virtual ~LocalityDataProviderInterface() {}
 };
@@ -56,7 +57,8 @@ class LocalityAwareLeasePolicy : public LeasePolicyInterface {
  public:
   LocalityAwareLeasePolicy(
       std::shared_ptr<LocalityDataProviderInterface> locality_data_provider,
-      NodeAddrFactory node_addr_factory, const rpc::Address fallback_rpc_address)
+      NodeAddrFactory node_addr_factory,
+      const rpc::Address fallback_rpc_address)
       : locality_data_provider_(locality_data_provider),
         node_addr_factory_(node_addr_factory),
         fallback_rpc_address_(fallback_rpc_address) {}

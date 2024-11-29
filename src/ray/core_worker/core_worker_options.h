@@ -33,14 +33,22 @@ struct CoreWorkerOptions {
   // Callback that must be implemented and provided by the language-specific worker
   // frontend to execute tasks and return their results.
   using TaskExecutionCallback = std::function<Status(
-      TaskType task_type, const std::string task_name, const RayFunction &ray_function,
+      const rpc::Address &caller_address,
+      TaskType task_type,
+      const std::string task_name,
+      const RayFunction &ray_function,
       const std::unordered_map<std::string, double> &required_resources,
       const std::vector<std::shared_ptr<RayObject>> &args,
       const std::vector<rpc::ObjectReference> &arg_refs,
-      const std::vector<ObjectID> &return_ids, const std::string &debugger_breakpoint,
-      std::vector<std::shared_ptr<RayObject>> *results,
+      const std::string &debugger_breakpoint,
+      const std::string &serialized_retry_exception_allowlist,
+      std::vector<std::pair<ObjectID, std::shared_ptr<RayObject>>> *returns,
+      std::vector<std::pair<ObjectID, std::shared_ptr<RayObject>>> *dynamic_returns,
+      std::vector<std::pair<ObjectID, bool>> *streaming_generator_returns,
       std::shared_ptr<LocalMemoryBuffer> &creation_task_exception_pb_bytes,
-      bool *is_application_level_error,
+      bool *is_retryable_error,
+      // Application error string, empty if no error.
+      std::string *application_error,
       // The following 2 parameters `defined_concurrency_groups` and
       // `name_of_concurrency_group_to_execute` are used for Python
       // asyncio actor only.
@@ -48,7 +56,16 @@ struct CoreWorkerOptions {
       // Defined concurrency groups of this actor. Note this is only
       // used for actor creation task.
       const std::vector<ConcurrencyGroup> &defined_concurrency_groups,
-      const std::string name_of_concurrency_group_to_execute)>;
+      const std::string name_of_concurrency_group_to_execute,
+      bool is_reattempt,
+      // True if the task is for streaming generator.
+      // TODO(sang): Remove it and combine it with dynamic returns.
+      bool is_streaming_generator,
+      // True if task can be retried upon exception.
+      bool retry_exception,
+      // The max number of unconsumed objects where a generator
+      // can run without a pause.
+      int64_t generator_backpressure_num_objects)>;
 
   CoreWorkerOptions()
       : store_socket(""),
@@ -72,13 +89,18 @@ struct CoreWorkerOptions {
         unhandled_exception_handler(nullptr),
         get_lang_stack(nullptr),
         kill_main(nullptr),
+        cancel_async_task(nullptr),
         is_local_mode(false),
-        num_workers(0),
         terminate_asyncio_thread(nullptr),
         serialized_job_config(""),
         metrics_agent_port(-1),
         connect_on_start(true),
-        runtime_env_hash(0) {}
+        runtime_env_hash(0),
+        cluster_id(ClusterID::Nil()),
+        session_name(""),
+        entrypoint(""),
+        worker_launch_time_ms(-1),
+        worker_launched_time_ms(-1) {}
 
   /// Type of this worker (i.e., DRIVER or WORKER).
   WorkerType worker_type;
@@ -126,7 +148,7 @@ struct CoreWorkerOptions {
   /// Application-language callback to trigger garbage collection in the language
   /// runtime. This is required to free distributed references that may otherwise
   /// be held up in garbage objects.
-  std::function<void()> gc_collect;
+  std::function<void(bool triggered_by_global_gc)> gc_collect;
   /// Application-language callback to spill objects to external storage.
   std::function<std::vector<std::string>(const std::vector<rpc::ObjectReference> &)>
       spill_objects;
@@ -141,12 +163,15 @@ struct CoreWorkerOptions {
   std::function<void(const RayObject &error)> unhandled_exception_handler;
   /// Language worker callback to get the current call stack.
   std::function<void(std::string *)> get_lang_stack;
-  // Function that tries to interrupt the currently running Python thread.
-  std::function<bool()> kill_main;
+  // Function that tries to interrupt the currently running Python thread if its
+  // task ID matches the one given.
+  std::function<bool(const TaskID &task_id)> kill_main;
+  std::function<void(const TaskID &task_id,
+                     const RayFunction &ray_function,
+                     const std::string name_of_concurrency_group_to_execute)>
+      cancel_async_task;
   /// Is local mode being used.
   bool is_local_mode;
-  /// The number of workers to be started in the current process.
-  int num_workers;
   /// The function to destroy asyncio event and loops.
   std::function<void()> terminate_asyncio_thread;
   /// Serialized representation of JobConfig.
@@ -166,6 +191,20 @@ struct CoreWorkerOptions {
   /// may not have the same pid as the process the worker pool
   /// starts (due to shim processes).
   StartupToken startup_token{0};
+  /// Cluster ID associated with the core worker.
+  ClusterID cluster_id;
+  /// The function to allocate a new object for the memory store.
+  /// This allows allocating the objects in the language frontend's memory.
+  /// For example, for the Java worker, we can allocate the objects in the JVM heap
+  /// memory, and enables the JVM to manage the memory of the memory store objects.
+  std::function<std::shared_ptr<ray::RayObject>(const ray::RayObject &object,
+                                                const ObjectID &object_id)>
+      object_allocator;
+  /// Session name (Cluster ID) of the cluster.
+  std::string session_name;
+  std::string entrypoint;
+  int64_t worker_launch_time_ms;
+  int64_t worker_launched_time_ms;
 };
 }  // namespace core
 }  // namespace ray

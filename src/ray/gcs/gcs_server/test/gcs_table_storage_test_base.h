@@ -58,7 +58,7 @@ class GcsTableStorageTestBase : public ::testing::Test {
   }
 
   void TestGcsTableWithJobIdApi() {
-    auto table = gcs_table_storage_->ActorTable();
+    auto &table = gcs_table_storage_->ActorTable();
     JobID job_id1 = JobID::FromInt(1);
     JobID job_id2 = JobID::FromInt(2);
     JobID job_id3 = JobID::FromInt(3);
@@ -109,7 +109,7 @@ class GcsTableStorageTestBase : public ::testing::Test {
   template <typename TABLE, typename KEY, typename VALUE>
   int Get(TABLE &table, const KEY &key, std::vector<VALUE> &values) {
     auto on_done = [this, &values](const Status &status,
-                                   const boost::optional<VALUE> &result) {
+                                   const std::optional<VALUE> &result) {
       RAY_CHECK_OK(status);
       values.clear();
       if (result) {
@@ -127,9 +127,11 @@ class GcsTableStorageTestBase : public ::testing::Test {
   }
 
   template <typename TABLE, typename KEY, typename VALUE>
-  int GetByJobId(TABLE &table, const JobID &job_id, const KEY &key,
+  int GetByJobId(TABLE &table,
+                 const JobID &job_id,
+                 const KEY &key,
                  std::vector<VALUE> &values) {
-    auto on_done = [this, &values](const std::unordered_map<KEY, VALUE> &result) {
+    auto on_done = [this, &values](const absl::flat_hash_map<KEY, VALUE> &result) {
       values.clear();
       if (!result.empty()) {
         for (auto &item : result) {

@@ -14,7 +14,7 @@
 
 #include "ray/common/task/task.h"
 
-#include <sstream>
+#include "absl/strings/str_format.h"
 
 namespace ray {
 
@@ -26,18 +26,23 @@ RayTask::RayTask(TaskSpecification task_spec) : task_spec_(std::move(task_spec))
   ComputeDependencies();
 }
 
+RayTask::RayTask(TaskSpecification task_spec, std::string preferred_node_id)
+    : task_spec_(std::move(task_spec)), preferred_node_id_(std::move(preferred_node_id)) {
+  ComputeDependencies();
+}
+
 const TaskSpecification &RayTask::GetTaskSpecification() const { return task_spec_; }
 
 const std::vector<rpc::ObjectReference> &RayTask::GetDependencies() const {
   return dependencies_;
 }
 
+const std::string &RayTask::GetPreferredNodeID() const { return preferred_node_id_; }
+
 void RayTask::ComputeDependencies() { dependencies_ = task_spec_.GetDependencies(); }
 
 std::string RayTask::DebugString() const {
-  std::ostringstream stream;
-  stream << "task_spec={" << task_spec_.DebugString() << "}";
-  return stream.str();
+  return absl::StrFormat("task_spec={%s}", task_spec_.DebugString());
 }
 
 }  // namespace ray

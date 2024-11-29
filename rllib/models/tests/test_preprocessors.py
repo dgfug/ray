@@ -1,10 +1,10 @@
-import gym
-from gym.spaces import Box, Dict, Discrete, MultiDiscrete, Tuple
+import gymnasium as gym
+from gymnasium.spaces import Box, Dict, Discrete, MultiDiscrete, Tuple, MultiBinary
 import numpy as np
 import unittest
 
 import ray
-import ray.rllib.agents.ppo as ppo
+import ray.rllib.algorithms.ppo as ppo
 from ray.rllib.models.catalog import ModelCatalog
 from ray.rllib.models.preprocessors import (
     DictFlatteningPreprocessor,
@@ -14,13 +14,16 @@ from ray.rllib.models.preprocessors import (
     OneHotPreprocessor,
     AtariRamPreprocessor,
     GenericPixelPreprocessor,
+    MultiBinaryPreprocessor,
 )
 from ray.rllib.utils.test_utils import (
     check,
     check_compute_single_action,
     check_train_results,
-    framework_iterator,
 )
+from ray.rllib.utils.framework import try_import_tf
+
+tf1, tf, tfv = try_import_tf()
 
 
 class TestPreprocessors(unittest.TestCase):
@@ -32,60 +35,74 @@ class TestPreprocessors(unittest.TestCase):
     def tearDownClass(cls) -> None:
         ray.shutdown()
 
-    def test_preprocessing_disabled(self):
-        config = ppo.DEFAULT_CONFIG.copy()
-        config["seed"] = 42
-        config["env"] = "ray.rllib.examples.env.random_env.RandomEnv"
-        config["env_config"] = {
-            "config": {
-                "observation_space": Dict(
-                    {
-                        "a": Discrete(5),
-                        "b": Dict(
+    def test_preprocessing_disabled_modelv2(self):
+        config = (
+            ppo.PPOConfig()
+            .api_stack(
+                enable_env_runner_and_connector_v2=False,
+                enable_rl_module_and_learner=False,
+            )
+            .environment(
+                "ray.rllib.examples.envs.classes.random_env.RandomEnv",
+                env_config={
+                    "config": {
+                        "observation_space": Dict(
                             {
-                                "ba": Discrete(4),
-                                "bb": Box(-1.0, 1.0, (2, 3), dtype=np.float32),
+                                "a": Discrete(5),
+                                "b": Dict(
+                                    {
+                                        "ba": Discrete(4),
+                                        "bb": Box(-1.0, 1.0, (2, 3), dtype=np.float32),
+                                    }
+                                ),
+                                "c": Tuple((MultiDiscrete([2, 3]), Discrete(1))),
+                                "d": Box(-1.0, 1.0, (1,), dtype=np.int32),
                             }
                         ),
-                        "c": Tuple((MultiDiscrete([2, 3]), Discrete(1))),
-                        "d": Box(-1.0, 1.0, (1,), dtype=np.int32),
-                    }
-                ),
-            },
-        }
-        # Set this to True to enforce no preprocessors being used.
-        # Complex observations now arrive directly in the model as
-        # structures of batches, e.g. {"a": tensor, "b": [tensor, tensor]}
-        # for obs-space=Dict(a=..., b=Tuple(..., ...)).
-        config["_disable_preprocessor_api"] = True
-        # Speed things up a little.
-        config["train_batch_size"] = 100
-        config["sgd_minibatch_size"] = 10
-        config["rollout_fragment_length"] = 5
-        config["num_sgd_iter"] = 1
+                    },
+                },
+            )
+            # Speed things up a little.
+            .env_runners(rollout_fragment_length=5)
+            .training(train_batch_size=100, minibatch_size=10, num_epochs=1)
+            .debugging(seed=42)
+            # Set this to True to enforce no preprocessors being used.
+            # Complex observations now arrive directly in the model as
+            # structures of batches, e.g. {"a": tensor, "b": [tensor, tensor]}
+            # for obs-space=Dict(a=..., b=Tuple(..., ...)).
+            .experimental(_disable_preprocessor_api=True)
+        )
+
+        # (Artur): This test only works under the old ModelV2 API because we
+        # don't offer arbitrarily complex Models under the RLModules API without
+        # preprocessors. Such input spaces require custom implementations of the
+        # input space.
 
         num_iterations = 1
-        # Only supported for tf so far.
-        for _ in framework_iterator(config):
-            trainer = ppo.PPOTrainer(config=config)
-            for i in range(num_iterations):
-                results = trainer.train()
-                check_train_results(results)
-                print(results)
-            check_compute_single_action(trainer)
-            trainer.stop()
+        algo = config.build()
+        for i in range(num_iterations):
+            results = algo.train()
+            check_train_results(results)
+            print(results)
+        check_compute_single_action(algo)
+        algo.stop()
 
     def test_gym_preprocessors(self):
-        p1 = ModelCatalog.get_preprocessor(gym.make("CartPole-v0"))
+        p1 = ModelCatalog.get_preprocessor(gym.make("CartPole-v1"))
         self.assertEqual(type(p1), NoPreprocessor)
 
         p2 = ModelCatalog.get_preprocessor(gym.make("FrozenLake-v1"))
         self.assertEqual(type(p2), OneHotPreprocessor)
 
-        p3 = ModelCatalog.get_preprocessor(gym.make("MsPacman-ram-v0"))
+        p3 = ModelCatalog.get_preprocessor(gym.make("ale_py:ALE/MsPacman-ram-v5"))
         self.assertEqual(type(p3), AtariRamPreprocessor)
 
-        p4 = ModelCatalog.get_preprocessor(gym.make("MsPacmanNoFrameskip-v4"))
+        p4 = ModelCatalog.get_preprocessor(
+            gym.make(
+                "ale_py:ALE/MsPacman-v5",
+                frameskip=1,
+            )
+        )
         self.assertEqual(type(p4), GenericPixelPreprocessor)
 
     def test_tuple_preprocessor(self):
@@ -102,6 +119,21 @@ class TestPreprocessors(unittest.TestCase):
             list(pp.transform((0, np.array([1, 2, 3], np.float32)))),
             [float(x) for x in [1, 0, 0, 0, 0, 1, 2, 3]],
         )
+
+    def test_multi_binary_preprocessor(self):
+        observation_space = MultiBinary(5)
+        # Firstly, exclude MultiBinary from the list of preprocessors.
+        pp = ModelCatalog.get_preprocessor_for_space(
+            observation_space, include_multi_binary=False
+        )
+        # Scondly, include MultiBinary with the list of preprocessors.
+        self.assertTrue(isinstance(pp, NoPreprocessor))
+        pp = ModelCatalog.get_preprocessor_for_space(
+            observation_space, include_multi_binary=True
+        )
+        self.assertTrue(isinstance(pp, MultiBinaryPreprocessor))
+        self.assertEqual(pp.observation_space.shape, (5,))
+        check(pp.transform(np.array([0, 1, 0, 1, 1])), [0, 1, 0, 1, 1])
 
     def test_dict_flattening_preprocessor(self):
         space = Dict(
@@ -152,6 +184,62 @@ class TestPreprocessors(unittest.TestCase):
         check(
             pp.transform((np.array([0, 1, 3]),)),
             [1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+        )
+
+    def test_multidimensional_multidiscrete_one_hot_preprocessor(self):
+        space2d = MultiDiscrete([[2, 2], [3, 3]])
+        space3d = MultiDiscrete([[[2, 2], [3, 4]], [[5, 6], [7, 8]]])
+        pp2d = get_preprocessor(space2d)(space2d)
+        pp3d = get_preprocessor(space3d)(space3d)
+        self.assertTrue(isinstance(pp2d, OneHotPreprocessor))
+        self.assertTrue(isinstance(pp3d, OneHotPreprocessor))
+        self.assertTrue(pp2d.shape == (10,))
+        self.assertTrue(pp3d.shape == (37,))
+        check(
+            pp2d.transform(np.array([[1, 0], [2, 1]])),
+            [0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0],
+        )
+        check(
+            pp3d.transform(np.array([[[0, 1], [2, 3]], [[4, 5], [6, 7]]])),
+            [
+                1.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+            ],
         )
 
 

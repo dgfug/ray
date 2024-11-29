@@ -1,3 +1,5 @@
+# @OldAPIStack
+
 """
 Example of specifying an autoregressive action distribution.
 
@@ -31,28 +33,34 @@ $ python autoregressive_action_dist.py --no-autoreg
 Compare learning curve on TensorBoard:
 $ cd ~/ray-results/; tensorboard --logdir .
 
-Other options for running this example:
-$ python attention_net.py --help
 """
 
 import argparse
 import os
 
 import ray
-from ray import tune
-from ray.rllib.agents import ppo
-from ray.rllib.examples.env.correlated_actions_env import CorrelatedActionsEnv
-from ray.rllib.examples.models.autoregressive_action_model import (
+from ray import air, tune
+from ray.air.constants import TRAINING_ITERATION
+from ray.rllib.examples.envs.classes.correlated_actions_env import (
+    AutoRegressiveActionEnv,
+)
+from ray.rllib.examples._old_api_stack.models.autoregressive_action_model import (
     AutoregressiveActionModel,
     TorchAutoregressiveActionModel,
 )
-from ray.rllib.examples.models.autoregressive_action_dist import (
+from ray.rllib.examples._old_api_stack.models.autoregressive_action_dist import (
     BinaryAutoregressiveDistribution,
     TorchBinaryAutoregressiveDistribution,
 )
 from ray.rllib.models import ModelCatalog
+from ray.rllib.utils.metrics import (
+    ENV_RUNNER_RESULTS,
+    EPISODE_RETURN_MEAN,
+    NUM_ENV_STEPS_SAMPLED_LIFETIME,
+)
 from ray.rllib.utils.test_utils import check_learning_achieved
 from ray.tune.logger import pretty_print
+from ray.tune.registry import get_trainable_cls
 
 
 def get_cli_args():
@@ -73,8 +81,8 @@ def get_cli_args():
     )
     parser.add_argument(
         "--framework",
-        choices=["tf", "tf2", "tfe", "torch"],
-        default="tf",
+        choices=["tf", "tf2", "torch"],
+        default="torch",
         help="The DL framework specifier.",
     )
     parser.add_argument("--num-cpus", type=int, default=0)
@@ -96,7 +104,7 @@ def get_cli_args():
     parser.add_argument(
         "--stop-reward",
         type=float,
-        default=200.0,
+        default=-0.012,
         help="Reward at which we stop training.",
     )
     parser.add_argument(
@@ -135,63 +143,78 @@ if __name__ == "__main__":
         else BinaryAutoregressiveDistribution,
     )
 
-    # standard config
-    config = {
-        "env": CorrelatedActionsEnv,
-        "gamma": 0.5,
+    # Generic config.
+    config = (
+        get_trainable_cls(args.run)
+        .get_default_config()
+        # Batch-norm models have not been migrated to the RL Module API yet.
+        .api_stack(
+            enable_rl_module_and_learner=False,
+            enable_env_runner_and_connector_v2=False,
+        )
+        .environment(AutoRegressiveActionEnv)
+        .framework(args.framework)
+        .training(gamma=0.5)
         # Use GPUs iff `RLLIB_NUM_GPUS` env var set to > 0.
-        "num_gpus": int(os.environ.get("RLLIB_NUM_GPUS", "0")),
-        "framework": args.framework,
-    }
-    # use registered model and dist in config
+        .resources(num_gpus=int(os.environ.get("RLLIB_NUM_GPUS", "0")))
+    )
+
+    # Use registered model and dist in config.
     if not args.no_autoreg:
-        config["model"] = {
-            "custom_model": "autoregressive_model",
-            "custom_action_dist": "binary_autoreg_dist",
-        }
+        config.model.update(
+            {
+                "custom_model": "autoregressive_model",
+                "custom_action_dist": "binary_autoreg_dist",
+            }
+        )
 
     # use stop conditions passed via CLI (or defaults)
     stop = {
-        "training_iteration": args.stop_iters,
-        "timesteps_total": args.stop_timesteps,
-        "episode_reward_mean": args.stop_reward,
+        TRAINING_ITERATION: args.stop_iters,
+        NUM_ENV_STEPS_SAMPLED_LIFETIME: args.stop_timesteps,
+        f"{ENV_RUNNER_RESULTS}/{EPISODE_RETURN_MEAN}": args.stop_reward,
     }
 
-    # manual training loop using PPO without tune.run()
+    # manual training loop using PPO without ``Tuner.fit()``.
     if args.no_tune:
         if args.run != "PPO":
             raise ValueError("Only support --run PPO with --no-tune.")
-        ppo_config = ppo.DEFAULT_CONFIG.copy()
-        ppo_config.update(config)
-        trainer = ppo.PPOTrainer(config=ppo_config, env=CorrelatedActionsEnv)
+        # Have to specify this here are we are working with a generic AlgorithmConfig
+        # object, not a specific one (e.g. PPOConfig).
+        config.algo_class = args.run
+        algo = config.build()
         # run manual training loop and print results after each iteration
         for _ in range(args.stop_iters):
-            result = trainer.train()
+            result = algo.train()
             print(pretty_print(result))
             # stop training if the target train steps or reward are reached
             if (
-                result["timesteps_total"] >= args.stop_timesteps
-                or result["episode_reward_mean"] >= args.stop_reward
+                result[f"{NUM_ENV_STEPS_SAMPLED_LIFETIME}"] >= args.stop_timesteps
+                or result[ENV_RUNNER_RESULTS][EPISODE_RETURN_MEAN] >= args.stop_reward
             ):
                 break
 
         # run manual test loop: 1 iteration until done
         print("Finished training. Running manual test/inference loop.")
-        env = CorrelatedActionsEnv(_)
-        obs = env.reset()
+        env = AutoRegressiveActionEnv(_)
+        obs, info = env.reset()
         done = False
         total_reward = 0
         while not done:
-            a1, a2 = trainer.compute_single_action(obs)
-            next_obs, reward, done, _ = env.step((a1, a2))
+            a1, a2 = algo.compute_single_action(obs)
+            next_obs, reward, done, truncated, _ = env.step((a1, a2))
             print(f"Obs: {obs}, Action: a1={a1} a2={a2}, Reward: {reward}")
             obs = next_obs
             total_reward += reward
         print(f"Total reward in test episode: {total_reward}")
+        algo.stop()
 
-    # run with Tune for auto env and trainer creation and TensorBoard
+    # run with Tune for auto env and Algorithm creation and TensorBoard
     else:
-        results = tune.run(args.run, stop=stop, config=config, verbose=2)
+        tuner = tune.Tuner(
+            args.run, run_config=air.RunConfig(stop=stop, verbose=2), param_space=config
+        )
+        results = tuner.fit()
 
         if args.as_test:
             print("Checking if learning goals were achieved")

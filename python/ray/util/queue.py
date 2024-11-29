@@ -38,17 +38,24 @@ class Queue:
             need to pass in custom resource requirements, for example.
 
     Examples:
-        >>> q = Queue()
-        >>> items = list(range(10))
-        >>> for item in items:
-        >>>     q.put(item)
-        >>> for item in items:
-        >>>     assert item == q.get()
-        >>> # Create Queue with the underlying actor reserving 1 CPU.
-        >>> q = Queue(actor_options={"num_cpus": 1})
+        .. testcode::
+
+            from ray.util.queue import Queue
+            q = Queue()
+            items = list(range(10))
+            for item in items:
+                q.put(item)
+            for item in items:
+                assert item == q.get()
+            # Create Queue with the underlying actor reserving 1 CPU.
+            q = Queue(actor_options={"num_cpus": 1})
     """
 
     def __init__(self, maxsize: int = 0, actor_options: Optional[Dict] = None) -> None:
+        from ray._private.usage.usage_lib import record_library_usage
+
+        record_library_usage("util.Queue")
+
         actor_options = actor_options or {}
         self.maxsize = maxsize
         self.actor = (
@@ -229,11 +236,11 @@ class Queue:
         All of the resources reserved by the queue will be released.
 
         Args:
-            force (bool): If True, forcefully kill the actor, causing an
+            force: If True, forcefully kill the actor, causing an
                 immediate failure. If False, graceful
                 actor termination will be attempted first, before falling back
                 to a forceful kill.
-            grace_period_s (int): If force is False, how long in seconds to
+            grace_period_s: If force is False, how long in seconds to
                 wait for graceful termination before falling back to
                 forceful kill.
         """

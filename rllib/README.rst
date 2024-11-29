@@ -5,19 +5,19 @@ RLlib: Industry-Grade Reinforcement Learning with TF and Torch
 production-level, highly distributed RL workloads, while maintaining
 unified and simple APIs for a large variety of industry applications.
 
-Whether you would like to train your agents in multi-agent setups,
-purely from offline (historic) datasets, or using externally
-connected simulators, RLlib offers simple solutions for your decision making needs.
+Whether you would like to train your agents in **multi-agent** setups,
+purely from **offline** (historic) datasets, or using **externally
+connected simulators**, RLlib offers simple solutions for your decision making needs.
 
-You **don't need** to be an **RL expert** to use RLlib, nor do you need to learn Ray or any
-other of its libraries! If you either have your problem coded (in python) as an
-`RL environment <https://medium.com/distributed-computing-with-ray/anatomy-of-a-custom-environment-for-rllib-327157f269e5>`_
+If you either have your problem coded (in python) as an
+`RL environment <https://docs.ray.io/en/master/rllib/rllib-env.html#configuring-environments>`_
 or own lots of pre-recorded, historic behavioral data to learn from, you will be
 up and running in only a few days.
 
 RLlib is already used in production by industry leaders in many different verticals, such as
 `climate control <https://www.anyscale.com/events/2021/06/23/applying-ray-and-rllib-to-real-life-industrial-use-cases>`_,
-`manufacturing and logistics <https://www.anyscale.com/events/2021/06/22/offline-rl-with-rllib>`_,
+`industrial control <https://www.anyscale.com/events/2021/06/22/offline-rl-with-rllib>`_,
+`manufacturing and logistics <https://www.anyscale.com/events/2022/03/29/alphadow-leveraging-rays-ecosystem-to-train-and-deploy-an-rl-industrial>`_,
 `finance <https://www.anyscale.com/events/2021/06/22/a-24x-speedup-for-reinforcement-learning-with-rllib-+-ray>`_,
 `gaming <https://www.anyscale.com/events/2021/06/22/using-reinforcement-learning-to-optimize-iap-offer-recommendations-in-mobile-games>`_,
 `automobile <https://www.anyscale.com/events/2021/06/23/using-rllib-in-an-enterprise-scale-reinforcement-learning-solution>`_,
@@ -25,44 +25,72 @@ RLlib is already used in production by industry leaders in many different vertic
 `boat design <https://www.youtube.com/watch?v=cLCK13ryTpw>`_,
 and many others.
 
+You can also read about `RLlib Key Concepts. <https://docs.ray.io/en/master/rllib/core-concepts.html>`_
+
 
 Installation and Setup
 ----------------------
 
 Install RLlib and run your first experiment on your laptop in seconds:
 
-**TensorFlow:**
-
-.. code-block:: bash
-
-    $ conda create -n rllib python=3.8
-    $ conda activate rllib
-    $ pip install "ray[rllib]" tensorflow "gym[atari]" "gym[accept-rom-license]" atari_py
-    $ # Run a test job:
-    $ rllib train --run APPO --env CartPole-v0
-
-
 **PyTorch:**
 
 .. code-block:: bash
 
-    $ conda create -n rllib python=3.8
+    $ conda create -n rllib python=3.11
     $ conda activate rllib
-    $ pip install "ray[rllib]" torch "gym[atari]" "gym[accept-rom-license]" atari_py
-    $ # Run a test job:
-    $ rllib train --run APPO --env CartPole-v0 --torch
+    $ pip install "ray[rllib]" torch "gymnasium[atari]" "gymnasium[accept-rom-license]" atari_py
+    $ # Run a test job (assuming you are in the `ray` pip-installed directory):
+    $ cd rllib/examples/inference/
+    $ python policy_inference_after_training.py --stop-reward=100.0
+
+
+Algorithms Supported
+----------------------
+
+Model-free On-policy RL:
+
+- `Synchronous Proximal Policy Optimization (APPO) <https://docs.ray.io/en/master/rllib/rllib-algorithms.html#appo>`__
+- `Proximal Policy Optimization (PPO) <https://docs.ray.io/en/master/rllib/rllib-algorithms.html#ppo>`__
+- `Importance Weighted Actor-Learner Architecture (IMPALA) <https://docs.ray.io/en/master/rllib/rllib-algorithms.html#impala>`__
+
+Model-free Off-policy RL:
+
+- `Deep Q Networks (DQN, Rainbow, Parametric DQN) <https://docs.ray.io/en/master/rllib/rllib-algorithms.html#dqn>`__
+- `Soft Actor Critic (SAC) <https://docs.ray.io/en/master/rllib/rllib-algorithms.html#sac>`__
+
+Model-based RL:
+
+- `DreamerV3 <https://docs.ray.io/en/master/rllib/rllib-algorithms.html#dreamerv3>`__
+
+Offline RL:
+
+- `Behavior Cloning (BC; derived from MARWIL implementation) <https://docs.ray.io/en/master/rllib/rllib-algorithms.html#bc>`__
+- `Conservative Q-Learning (CQL) <https://docs.ray.io/en/master/rllib/rllib-algorithms.html#cql>`__
+- `Monotonic Advantage Re-Weighted Imitation Learning (MARWIL) <https://docs.ray.io/en/master/rllib/rllib-algorithms.html#marwil>`__
+
+Multi-agent:
+
+- `Parameter Sharing <https://docs.ray.io/en/master/rllib/rllib-algorithms.html#parameter>`__
+- `Shared Critic Methods <https://docs.ray.io/en/master/rllib/rllib-algorithms.html#sc>`__
+
+Others:
+
+- `Fully Independent Learning <https://docs.ray.io/en/master/rllib/rllib-algorithms.html#fil>`__
+
+A list of all the algorithms can be found `here <https://docs.ray.io/en/master/rllib/rllib-algorithms.html>`__ .
 
 
 Quick First Experiment
 ----------------------
 
-.. code-block:: python
+.. testcode::
 
-    import gym
-    from ray.rllib.agents.ppo import PPOTrainer
+    import gymnasium as gym
+    from ray.rllib.algorithms.ppo import PPOConfig
 
 
-    # Define your problem using python and openAI's gym API:
+    # Define your problem using python and Farama-Foundation's gymnasium API:
     class ParrotEnv(gym.Env):
         """Environment in which an agent must learn to repeat the seen observations.
 
@@ -84,7 +112,7 @@ Quick First Experiment
             self.cur_obs = None
             self.episode_len = 0
 
-        def reset(self):
+        def reset(self, *, seed=None, options=None):
             """Resets the episode and returns the initial observation of the new one.
             """
             # Reset the episode len.
@@ -92,7 +120,7 @@ Quick First Experiment
             # Sample a random number from our observation space.
             self.cur_obs = self.observation_space.sample()
             # Return initial observation.
-            return self.cur_obs
+            return self.cur_obs, {}
 
         def step(self, action):
             """Takes a single step in the episode given `action`
@@ -100,37 +128,51 @@ Quick First Experiment
             Returns:
                 New observation, reward, done-flag, info-dict (empty).
             """
-            # Set `done` flag after 10 steps.
+            # Set `truncated` flag after 10 steps.
             self.episode_len += 1
-            done = self.episode_len >= 10
+            terminated = False
+            truncated = self.episode_len >= 10
             # r = -abs(obs - action)
             reward = -sum(abs(self.cur_obs - action))
             # Set a new observation (random sample).
             self.cur_obs = self.observation_space.sample()
-            return self.cur_obs, reward, done, {}
+            return self.cur_obs, reward, terminated, truncated, {}
 
 
-    # Create an RLlib Trainer instance to learn how to act in the above
-    # environment.
-    trainer = PPOTrainer(
-        config={
+    # Create an RLlib Algorithm instance from a PPOConfig to learn how to
+    # act in the above environment.
+    config = (
+        PPOConfig()
+        .api_stack(
+            enable_rl_module_and_learner=True,
+            enable_env_runner_and_connector_v2=True,
+        )
+        .environment(
             # Env class to use (here: our gym.Env sub-class from above).
-            "env": ParrotEnv,
+            env=ParrotEnv,
             # Config dict to be passed to our custom env's constructor.
-            "env_config": {
+            env_config={
                 "parrot_shriek_range": gym.spaces.Box(-5.0, 5.0, (1, ))
             },
-            # Parallelize environment rollouts.
-            "num_workers": 3,
-        })
+        )
+        # Parallelize environment sampling.
+        .env_runners(num_env_runners=3)
+    )
+    # Use the config's `build()` method to construct a PPO object.
+    algo = config.build()
 
     # Train for n iterations and report results (mean episode rewards).
     # Since we have to guess 10 times and the optimal reward is 0.0
     # (exact match between observation and action value),
     # we can expect to reach an optimal episode reward of 0.0.
-    for i in range(5):
-        results = trainer.train()
-        print(f"Iter: {i}; avg. reward={results['episode_reward_mean']}")
+    for i in range(1):
+        results = algo.train()
+        print(f"Iter: {i}; avg. return={results['env_runners/episode_return_mean']}")
+
+.. testoutput::
+    :options: +MOCK
+
+    Iter: 0; avg. reward=-41.88662799871655
 
 
 After training, you may want to perform action computations (inference) in your environment.
@@ -141,7 +183,7 @@ Below is a minimal example on how to do this. Also
 and `attention nets <https://github.com/ray-project/ray/blob/master/rllib/examples/inference_and_serving/policy_inference_after_training_with_attention.py>`_).
 
 
-.. code-block:: python
+.. testcode::
 
     # Perform inference (action computations) based on given env observations.
     # Note that we are using a slightly simpler env here (-3.0 to 3.0, instead
@@ -149,20 +191,25 @@ and `attention nets <https://github.com/ray-project/ray/blob/master/rllib/exampl
     # (hopefully) learned to "just always repeat the observation!".
     env = ParrotEnv({"parrot_shriek_range": gym.spaces.Box(-3.0, 3.0, (1, ))})
     # Get the initial observation (some value between -10.0 and 10.0).
-    obs = env.reset()
-    done = False
+    obs, info = env.reset()
+    terminated = truncated = False
     total_reward = 0.0
     # Play one episode.
-    while not done:
+    while not terminated and not truncated:
         # Compute a single action, given the current observation
         # from the environment.
-        action = trainer.compute_single_action(obs)
+        action = algo.compute_single_action(obs)
         # Apply the computed action in the environment.
-        obs, reward, done, info = env.step(action)
+        obs, reward, terminated, truncated, info = env.step(action)
         # Sum up rewards for reporting purposes.
         total_reward += reward
     # Report results.
     print(f"Shreaked for 1 episode; total-reward={total_reward}")
+
+.. testoutput::
+    :options: +MOCK
+
+    Shreaked for 1 episode; total-reward=-0.001
 
 
 For a more detailed `"60 second" example, head to our main documentation  <https://docs.ray.io/en/master/rllib/index.html>`_.
@@ -178,11 +225,11 @@ The most **popular deep-learning frameworks**: `PyTorch <https://github.com/ray-
 (tf1.x/2.x static-graph/eager/traced) <https://github.com/ray-project/ray/blob/master/rllib/examples/custom_tf_policy.py>`_.
 
 **Highly distributed learning**: Our RLlib algorithms (such as our "PPO" or "IMPALA")
-allow you to set the ``num_workers`` config parameter, such that your workloads can run
+allow you to set the ``num_env_runners`` config parameter, such that your workloads can run
 on 100s of CPUs/nodes thus parallelizing and speeding up learning.
 
 **Vectorized (batched) and remote (parallel) environments**: RLlib auto-vectorizes
-your ``gym.Envs`` via the ``num_envs_per_worker`` config. Environment workers can
+your ``gym.Envs`` via the ``num_envs_per_env_runner`` config. Environment workers can
 then batch and thus significantly speedup the action computing forward pass.
 On top of that, RLlib offers the ``remote_worker_envs`` config to create
 `single environments (within a vectorized one) as ray Actors <https://github.com/ray-project/ray/blob/master/rllib/examples/remote_base_env_with_custom_api.py>`_,
@@ -202,8 +249,8 @@ thus parallelizing even the env stepping process.
 **External simulators**: Don't have your simulation running as a gym.Env in python?
 No problem! RLlib supports an external environment API and comes with a pluggable,
 off-the-shelve
-`client <https://github.com/ray-project/ray/blob/master/rllib/examples/serving/cartpole_client.py>`_/
-`server <https://github.com/ray-project/ray/blob/master/rllib/examples/serving/cartpole_server.py>`_
+`client <https://github.com/ray-project/ray/blob/master/rllib/examples/envs/external_envs/cartpole_client.py>`_/
+`server <https://github.com/ray-project/ray/blob/master/rllib/examples/envs/external_envs/cartpole_server.py>`_
 setup that allows you to run 100s of independent simulators on the "outside"
 (e.g. a Windows cloud) connecting to a central RLlib Policy-Server that learns
 and serves actions. Alternatively, actions can be computed on the client side
@@ -214,7 +261,7 @@ for your particular problem, but tons of historic data recorded by a legacy (may
 non-RL/ML) system? This branch of reinforcement learning is for you!
 RLlib's comes with several `offline RL <https://github.com/ray-project/ray/blob/master/rllib/examples/offline_rl.py>`_
 algorithms (*CQL*, *MARWIL*, and *DQfD*), allowing you to either purely
-`behavior-clone <https://github.com/ray-project/ray/blob/master/rllib/agents/marwil/tests/test_bc.py>`_
+`behavior-clone <https://github.com/ray-project/ray/blob/master/rllib/algorithms/bc/tests/test_bc.py>`_
 your existing system or learn how to further improve over it.
 
 

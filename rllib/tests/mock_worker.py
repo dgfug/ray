@@ -1,5 +1,7 @@
 import numpy as np
 
+import ray
+from ray.rllib.env.env_runner_group import EnvRunnerGroup
 from ray.rllib.policy.sample_batch import SampleBatch
 from ray.rllib.utils.filter import MeanStdFilter
 
@@ -36,7 +38,8 @@ class _MockWorker:
         obs_filter = self.obs_filter.copy()
         rew_filter = self.rew_filter.copy()
         if flush_after:
-            self.obs_filter.reset_buffer(), self.rew_filter.reset_buffer()
+            self.obs_filter.reset_buffer()
+            self.rew_filter.reset_buffer()
 
         return {"obs_filter": obs_filter, "rew_filter": rew_filter}
 
@@ -44,3 +47,16 @@ class _MockWorker:
         assert all(k in new_filters for k in self.filters)
         for k in self.filters:
             self.filters[k].sync(new_filters[k])
+
+    def apply(self, fn):
+        return fn(self)
+
+
+class _MockWorkerSet(EnvRunnerGroup):
+    def __init__(self, num_mock_workers):
+        super().__init__(local_env_runner=False, _setup=False)
+        self.add_workers(num_workers=num_mock_workers, validate=False)
+
+    def _make_worker(self, *args, **kwargs):
+        RemoteWorker = ray.remote(_MockWorker)
+        return RemoteWorker.remote(sample_count=10)

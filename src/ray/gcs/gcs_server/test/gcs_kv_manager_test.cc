@@ -18,6 +18,9 @@
 
 #include "gtest/gtest.h"
 #include "ray/common/test_util.h"
+#include "ray/gcs/gcs_server/store_client_kv.h"
+#include "ray/gcs/store_client/in_memory_store_client.h"
+#include "ray/gcs/store_client/redis_store_client.h"
 
 class GcsKVManagerTest : public ::testing::TestWithParam<std::string> {
  public:
@@ -28,13 +31,16 @@ class GcsKVManagerTest : public ::testing::TestWithParam<std::string> {
       boost::asio::io_service::work work(io_service);
       io_service.run();
     });
-    ASSERT_TRUE(GetParam() == "redis" || GetParam() == "memory");
     ray::gcs::RedisClientOptions redis_client_options(
         "127.0.0.1", ray::TEST_REDIS_SERVER_PORTS.front(), "", false);
     if (GetParam() == "redis") {
-      kv_instance = std::make_unique<ray::gcs::RedisInternalKV>(redis_client_options);
+      auto client = std::make_shared<ray::gcs::RedisClient>(redis_client_options);
+      RAY_CHECK_OK(client->Connect(io_service));
+      kv_instance = std::make_unique<ray::gcs::StoreClientInternalKV>(
+          std::make_unique<ray::gcs::RedisStoreClient>(client));
     } else if (GetParam() == "memory") {
-      kv_instance = std::make_unique<ray::gcs::MemoryInternalKV>(io_service);
+      kv_instance = std::make_unique<ray::gcs::StoreClientInternalKV>(
+          std::make_unique<ray::gcs::InMemoryStoreClient>(io_service));
     }
   }
 
@@ -67,6 +73,16 @@ TEST_P(GcsKVManagerTest, TestInternalKV) {
   });
   kv_instance->Get("N2", "A_1", [](auto b) { ASSERT_FALSE(b.has_value()); });
   kv_instance->Get("N1", "A_1", [](auto b) { ASSERT_TRUE(b.has_value()); });
+  kv_instance->MultiGet("N1", {"A_1", "A_2", "A_3"}, [](auto b) {
+    ASSERT_EQ(3, b.size());
+    ASSERT_EQ("B", b["A_1"]);
+    ASSERT_EQ("C", b["A_2"]);
+    ASSERT_EQ("C", b["A_3"]);
+  });
+  // MultiGet with empty keys.
+  kv_instance->MultiGet("N1", {}, [](auto b) { ASSERT_EQ(0, b.size()); });
+  // MultiGet with non-existent keys.
+  kv_instance->MultiGet("N1", {"A_4", "A_5"}, [](auto b) { ASSERT_EQ(0, b.size()); });
   {
     // Delete by prefix are two steps in redis mode, so we need sync here.
     std::promise<void> p;
@@ -95,9 +111,13 @@ TEST_P(GcsKVManagerTest, TestInternalKV) {
     });
     p.get_future().get();
   }
+  // Check the keys are deleted.
+  kv_instance->MultiGet(
+      "N1", {"A_1", "A_2", "A_3"}, [](auto b) { ASSERT_EQ(0, b.size()); });
 }
 
-INSTANTIATE_TEST_SUITE_P(GcsKVManagerTestFixture, GcsKVManagerTest,
+INSTANTIATE_TEST_SUITE_P(GcsKVManagerTestFixture,
+                         GcsKVManagerTest,
                          ::testing::Values("redis", "memory"));
 
 int main(int argc, char **argv) {

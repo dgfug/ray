@@ -15,6 +15,7 @@
 #pragma once
 
 #include "ray/common/ray_object.h"
+#include "ray/common/scheduling/cluster_resource_data.h"
 #include "ray/common/task/task.h"
 #include "ray/common/task/task_common.h"
 #include "src/ray/protobuf/node_manager.pb.h"
@@ -47,8 +48,6 @@ enum class UnscheduledWorkCause {
   WORKER_NOT_FOUND_JOB_CONFIG_NOT_EXIST,
   /// Waiting becasue the worker wasn't available since its registration timed out.
   WORKER_NOT_FOUND_REGISTRATION_TIMEOUT,
-  /// Waiting because the worker wasn't available since it was rate limited.
-  WORKER_NOT_FOUND_RATE_LIMITED,
 };
 
 /// Work represents all the information needed to make a scheduling decision.
@@ -62,8 +61,11 @@ class Work {
   rpc::RequestWorkerLeaseReply *reply;
   std::function<void(void)> callback;
   std::shared_ptr<TaskResourceInstances> allocated_instances;
-  Work(RayTask task, bool grant_or_reject, bool is_selected_based_on_locality,
-       rpc::RequestWorkerLeaseReply *reply, std::function<void(void)> callback,
+  Work(RayTask task,
+       bool grant_or_reject,
+       bool is_selected_based_on_locality,
+       rpc::RequestWorkerLeaseReply *reply,
+       std::function<void(void)> callback,
        WorkStatus status = WorkStatus::WAITING)
       : task(task),
         grant_or_reject(grant_or_reject),

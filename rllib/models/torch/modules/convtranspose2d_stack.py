@@ -2,6 +2,7 @@ from typing import Tuple
 
 from ray.rllib.models.torch.misc import Reshape
 from ray.rllib.models.utils import get_activation_fn, get_initializer
+from ray.rllib.utils.annotations import OldAPIStack
 from ray.rllib.utils.framework import try_import_torch
 
 torch, nn = try_import_torch()
@@ -9,6 +10,7 @@ if torch:
     import torch.distributions as td
 
 
+@OldAPIStack
 class ConvTranspose2DStack(nn.Module):
     """ConvTranspose2D decoder generating an image distribution from a vector."""
 
@@ -30,13 +32,13 @@ class ConvTranspose2DStack(nn.Module):
         """Initializes a TransposedConv2DStack instance.
 
         Args:
-            input_size (int): The size of the 1D input vector, from which to
+            input_size: The size of the 1D input vector, from which to
                 generate the image distribution.
             filters (Tuple[Tuple[int]]): Tuple of filter setups (1 for each
                 ConvTranspose2D layer): [in_channels, kernel, stride].
             initializer (Union[str]):
-            bias_init (float): The initial bias values to use.
-            activation_fn (str): Activation function descriptor (str).
+            bias_init: The initial bias values to use.
+            activation_fn: Activation function descriptor (str).
             output_shape (Tuple[int]): Shape of the final output image.
         """
         super().__init__()

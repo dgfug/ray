@@ -59,13 +59,20 @@ void GlobalStateAccessor::Disconnect() {
   }
 }
 
-std::vector<std::string> GlobalStateAccessor::GetAllJobInfo() {
+std::vector<std::string> GlobalStateAccessor::GetAllJobInfo(
+    bool skip_submission_job_info_field, bool skip_is_running_tasks_field) {
+  // This method assumes GCS is HA and does not return any error. On GCS down, it
+  // retries indefinitely.
   std::vector<std::string> job_table_data;
   std::promise<bool> promise;
   {
     absl::ReaderMutexLock lock(&mutex_);
     RAY_CHECK_OK(gcs_client_->Jobs().AsyncGetAll(
-        TransformForMultiItemCallback<rpc::JobTableData>(job_table_data, promise)));
+        /*job_or_submission_id=*/std::nullopt,
+        skip_submission_job_info_field,
+        skip_is_running_tasks_field,
+        TransformForMultiItemCallback<rpc::JobTableData>(job_table_data, promise),
+        /*timeout_ms=*/-1));
   }
   promise.get_future().get();
   return job_table_data;
@@ -82,53 +89,30 @@ JobID GlobalStateAccessor::GetNextJobID() {
 }
 
 std::vector<std::string> GlobalStateAccessor::GetAllNodeInfo() {
+  // This method assumes GCS is HA and does not return any error. On GCS down, it
+  // retries indefinitely.
   std::vector<std::string> node_table_data;
   std::promise<bool> promise;
   {
     absl::ReaderMutexLock lock(&mutex_);
     RAY_CHECK_OK(gcs_client_->Nodes().AsyncGetAll(
-        TransformForMultiItemCallback<rpc::GcsNodeInfo>(node_table_data, promise)));
+        TransformForMultiItemCallback<rpc::GcsNodeInfo>(node_table_data, promise),
+        /*timeout_ms=*/-1));
   }
   promise.get_future().get();
   return node_table_data;
 }
 
-std::vector<std::string> GlobalStateAccessor::GetAllProfileInfo() {
-  std::vector<std::string> profile_table_data;
+std::vector<std::string> GlobalStateAccessor::GetAllTaskEvents() {
+  std::vector<std::string> task_events;
   std::promise<bool> promise;
   {
     absl::ReaderMutexLock lock(&mutex_);
-    RAY_CHECK_OK(gcs_client_->Stats().AsyncGetAll(
-        TransformForMultiItemCallback<rpc::ProfileTableData>(profile_table_data,
-                                                             promise)));
+    RAY_CHECK_OK(gcs_client_->Tasks().AsyncGetTaskEvents(
+        TransformForMultiItemCallback<rpc::TaskEvents>(task_events, promise)));
   }
   promise.get_future().get();
-  return profile_table_data;
-}
-
-std::string GlobalStateAccessor::GetNodeResourceInfo(const NodeID &node_id) {
-  rpc::ResourceMap node_resource_map;
-  std::promise<void> promise;
-  auto on_done =
-      [&node_resource_map, &promise](
-          const Status &status,
-          const boost::optional<ray::gcs::NodeResourceInfoAccessor::ResourceMap>
-              &result) {
-        RAY_CHECK_OK(status);
-        if (result) {
-          auto result_value = result.get();
-          for (auto &data : result_value) {
-            (*node_resource_map.mutable_items())[data.first] = *data.second;
-          }
-        }
-        promise.set_value();
-      };
-  {
-    absl::ReaderMutexLock lock(&mutex_);
-    RAY_CHECK_OK(gcs_client_->NodeResources().AsyncGetResources(node_id, on_done));
-  }
-  promise.get_future().get();
-  return node_resource_map.SerializeAsString();
+  return task_events;
 }
 
 std::vector<std::string> GlobalStateAccessor::GetAllAvailableResources() {
@@ -144,6 +128,30 @@ std::vector<std::string> GlobalStateAccessor::GetAllAvailableResources() {
   return available_resources;
 }
 
+std::vector<std::string> GlobalStateAccessor::GetAllTotalResources() {
+  std::vector<std::string> total_resources;
+  std::promise<bool> promise;
+  {
+    absl::ReaderMutexLock lock(&mutex_);
+    RAY_CHECK_OK(gcs_client_->NodeResources().AsyncGetAllTotalResources(
+        TransformForMultiItemCallback<rpc::TotalResources>(total_resources, promise)));
+  }
+  promise.get_future().get();
+  return total_resources;
+}
+
+std::unordered_map<NodeID, int64_t> GlobalStateAccessor::GetDrainingNodes() {
+  std::promise<std::unordered_map<NodeID, int64_t>> promise;
+  {
+    absl::ReaderMutexLock lock(&mutex_);
+    RAY_CHECK_OK(gcs_client_->NodeResources().AsyncGetDrainingNodes(
+        [&promise](const std::unordered_map<NodeID, int64_t> &draining_nodes) {
+          promise.set_value(draining_nodes);
+        }));
+  }
+  return promise.get_future().get();
+}
+
 std::unique_ptr<std::string> GlobalStateAccessor::GetAllResourceUsage() {
   std::unique_ptr<std::string> resource_batch_data;
   std::promise<bool> promise;
@@ -157,12 +165,18 @@ std::unique_ptr<std::string> GlobalStateAccessor::GetAllResourceUsage() {
   return resource_batch_data;
 }
 
-std::vector<std::string> GlobalStateAccessor::GetAllActorInfo() {
+std::vector<std::string> GlobalStateAccessor::GetAllActorInfo(
+    const std::optional<ActorID> &actor_id,
+    const std::optional<JobID> &job_id,
+    const std::optional<std::string> &actor_state_name) {
   std::vector<std::string> actor_table_data;
   std::promise<bool> promise;
   {
     absl::ReaderMutexLock lock(&mutex_);
-    RAY_CHECK_OK(gcs_client_->Actors().AsyncGetAll(
+    RAY_CHECK_OK(gcs_client_->Actors().AsyncGetAllByFilter(
+        actor_id,
+        job_id,
+        actor_state_name,
         TransformForMultiItemCallback<rpc::ActorTableData>(actor_table_data, promise)));
   }
   promise.get_future().get();
@@ -175,8 +189,9 @@ std::unique_ptr<std::string> GlobalStateAccessor::GetActorInfo(const ActorID &ac
   {
     absl::ReaderMutexLock lock(&mutex_);
     RAY_CHECK_OK(gcs_client_->Actors().AsyncGet(
-        actor_id, TransformForOptionalItemCallback<rpc::ActorTableData>(actor_table_data,
-                                                                        promise)));
+        actor_id,
+        TransformForOptionalItemCallback<rpc::ActorTableData>(actor_table_data,
+                                                              promise)));
   }
   promise.get_future().get();
   return actor_table_data;
@@ -189,8 +204,9 @@ std::unique_ptr<std::string> GlobalStateAccessor::GetWorkerInfo(
   {
     absl::ReaderMutexLock lock(&mutex_);
     RAY_CHECK_OK(gcs_client_->Workers().AsyncGet(
-        worker_id, TransformForOptionalItemCallback<rpc::WorkerTableData>(
-                       worker_table_data, promise)));
+        worker_id,
+        TransformForOptionalItemCallback<rpc::WorkerTableData>(worker_table_data,
+                                                               promise)));
   }
   promise.get_future().get();
   return worker_table_data;
@@ -222,6 +238,89 @@ bool GlobalStateAccessor::AddWorkerInfo(const std::string &serialized_string) {
   }
   promise.get_future().get();
   return true;
+}
+
+uint32_t GlobalStateAccessor::GetWorkerDebuggerPort(const WorkerID &worker_id) {
+  absl::ReaderMutexLock debugger_lock(&debugger_port_mutex_);
+  std::promise<uint32_t> promise;
+  {
+    absl::ReaderMutexLock lock(&mutex_);
+    RAY_CHECK_OK(gcs_client_->Workers().AsyncGet(
+        worker_id,
+        [&promise](const Status &status,
+                   const std::optional<rpc::WorkerTableData> &result) {
+          RAY_CHECK_OK(status);
+          if (result.has_value()) {
+            promise.set_value(result->debugger_port());
+            return;
+          }
+          promise.set_value(0);
+        }));
+  }
+  // Setup a timeout
+  auto future = promise.get_future();
+  if (future.wait_for(std::chrono::seconds(
+          RayConfig::instance().gcs_server_request_timeout_seconds())) !=
+      std::future_status::ready) {
+    RAY_LOG(FATAL) << "Failed to get the debugger port within the timeout setting.";
+    return 0;
+  }
+  return future.get();
+}
+
+bool GlobalStateAccessor::UpdateWorkerDebuggerPort(const WorkerID &worker_id,
+                                                   const uint32_t debugger_port) {
+  // debugger mutex is used to avoid concurrent updates to the same worker
+  absl::WriterMutexLock debugger_lock(&debugger_port_mutex_);
+  std::promise<bool> promise;
+  {
+    absl::ReaderMutexLock lock(&mutex_);
+    RAY_CHECK_OK(gcs_client_->Workers().AsyncUpdateDebuggerPort(
+        worker_id, debugger_port, [&promise](const Status &status) {
+          RAY_CHECK_OK(status);
+          promise.set_value(status.ok());
+        }));
+  }
+  // Setup a timeout for the update request
+  auto future = promise.get_future();
+  if (future.wait_for(std::chrono::seconds(
+          RayConfig::instance().gcs_server_request_timeout_seconds())) !=
+      std::future_status::ready) {
+    RAY_LOG(FATAL) << "Failed to update the debugger port within the timeout setting.";
+    return false;
+  }
+  return future.get();
+}
+
+bool GlobalStateAccessor::UpdateWorkerNumPausedThreads(
+    const WorkerID &worker_id, const int num_paused_threads_delta) {
+  // Verify that the current thread is not the same as the thread_io_service_ to prevent
+  // deadlock
+  RAY_CHECK(thread_io_service_->get_id() != std::this_thread::get_id())
+      << "This method should not be called from the same thread as the "
+         "thread_io_service_";
+
+  // debugger mutex is used to avoid concurrent updates to the same worker
+  absl::WriterMutexLock debugger_lock(&debugger_threads_mutex_);
+  std::promise<bool> promise;
+  {
+    absl::ReaderMutexLock lock(&mutex_);
+    RAY_CHECK_OK(gcs_client_->Workers().AsyncUpdateWorkerNumPausedThreads(
+        worker_id, num_paused_threads_delta, [&promise](const Status &status) {
+          RAY_CHECK_OK(status);
+          promise.set_value(status.ok());
+        }));
+  }
+  // Setup a timeout for the update request
+  auto future = promise.get_future();
+  if (future.wait_for(std::chrono::seconds(
+          RayConfig::instance().gcs_server_request_timeout_seconds())) !=
+      std::future_status::ready) {
+    RAY_LOG(FATAL)
+        << "Failed to update the num of paused threads within the timeout setting.";
+    return false;
+  }
+  return future.get();
 }
 
 std::vector<std::string> GlobalStateAccessor::GetAllPlacementGroupInfo() {
@@ -259,7 +358,8 @@ std::unique_ptr<std::string> GlobalStateAccessor::GetPlacementGroupByName(
   {
     absl::ReaderMutexLock lock(&mutex_);
     RAY_CHECK_OK(gcs_client_->PlacementGroups().AsyncGetByName(
-        placement_group_name, ray_namespace,
+        placement_group_name,
+        ray_namespace,
         TransformForOptionalItemCallback<rpc::PlacementGroupTableData>(
             placement_group_table_data, promise)));
   }
@@ -272,7 +372,7 @@ std::unique_ptr<std::string> GlobalStateAccessor::GetInternalKV(const std::strin
   absl::ReaderMutexLock lock(&mutex_);
   std::string value;
 
-  Status status = gcs_client_->InternalKV().Get(ns, key, value);
+  Status status = gcs_client_->InternalKV().Get(ns, key, GetGcsTimeoutMs(), value);
   return status.ok() ? std::make_unique<std::string>(value) : nullptr;
 }
 
@@ -280,9 +380,9 @@ std::string GlobalStateAccessor::GetSystemConfig() {
   std::promise<std::string> promise;
   {
     absl::ReaderMutexLock lock(&mutex_);
-    RAY_CHECK_OK(gcs_client_->Nodes().AsyncGetInternalConfig(
+    RAY_CHECK_OK(gcs_client_->InternalKV().AsyncGetInternalConfig(
         [&promise](const Status &status,
-                   const boost::optional<std::string> &stored_raylet_config) {
+                   const std::optional<std::string> &stored_raylet_config) {
           RAY_CHECK_OK(status);
           promise.set_value(*stored_raylet_config);
         }));
@@ -296,31 +396,85 @@ std::string GlobalStateAccessor::GetSystemConfig() {
   return future.get();
 }
 
-ray::Status GlobalStateAccessor::GetNodeToConnectForDriver(
-    const std::string &node_ip_address, std::string *node_to_connect) {
+ray::Status GlobalStateAccessor::GetAliveNodes(std::vector<rpc::GcsNodeInfo> &nodes) {
+  std::promise<std::pair<Status, std::vector<rpc::GcsNodeInfo>>> promise;
+  {
+    absl::ReaderMutexLock lock(&mutex_);
+    RAY_CHECK_OK(gcs_client_->Nodes().AsyncGetAll(
+        [&promise](Status status, std::vector<rpc::GcsNodeInfo> &&nodes) {
+          promise.set_value(
+              std::pair<Status, std::vector<rpc::GcsNodeInfo>>(status, std::move(nodes)));
+        },
+        /*timeout_ms=*/-1));
+  }
+  auto result = promise.get_future().get();
+  auto status = result.first;
+  if (!status.ok()) {
+    return status;
+  }
+
+  std::copy_if(result.second.begin(),
+               result.second.end(),
+               std::back_inserter(nodes),
+               [](const rpc::GcsNodeInfo &node) {
+                 return node.state() == rpc::GcsNodeInfo::ALIVE;
+               });
+  return status;
+}
+
+ray::Status GlobalStateAccessor::GetNode(const std::string &node_id,
+                                         std::string *node_info) {
   auto start_ms = current_time_ms();
+  auto node_id_binary = NodeID::FromHex(node_id).Binary();
   while (true) {
-    std::promise<std::pair<Status, std::vector<rpc::GcsNodeInfo>>> promise;
-    {
-      absl::ReaderMutexLock lock(&mutex_);
-      RAY_CHECK_OK(gcs_client_->Nodes().AsyncGetAll(
-          [&promise](Status status, std::vector<rpc::GcsNodeInfo> &&nodes) {
-            promise.set_value(std::pair<Status, std::vector<rpc::GcsNodeInfo>>(
-                status, std::move(nodes)));
-          }));
-    }
-    auto result = promise.get_future().get();
-    auto status = result.first;
+    std::vector<rpc::GcsNodeInfo> nodes;
+    auto status = GetAliveNodes(nodes);
     if (!status.ok()) {
       return status;
     }
 
-    // Deal with alive nodes only
+    if (nodes.empty()) {
+      status = Status::NotFound("GCS has started but no raylets have registered yet.");
+    } else {
+      int relevant_client_index = -1;
+      for (int i = 0; i < static_cast<int>(nodes.size()); i++) {
+        const auto &node = nodes[i];
+        if (node_id_binary == node.node_id()) {
+          relevant_client_index = i;
+          break;
+        }
+      }
+
+      if (relevant_client_index < 0) {
+        status = Status::NotFound(
+            "GCS cannot find the node with node ID " + node_id +
+            ". The node registration may not be complete yet before the timeout." +
+            " Try increase the RAY_raylet_start_wait_time_s config.");
+      } else {
+        *node_info = nodes[relevant_client_index].SerializeAsString();
+        return Status::OK();
+      }
+    }
+
+    if (current_time_ms() - start_ms >=
+        RayConfig::instance().raylet_start_wait_time_s() * 1000) {
+      return status;
+    }
+    RAY_LOG(WARNING) << "Retrying to get node with node ID " << node_id;
+    // Some of the information may not be in GCS yet, so wait a little bit.
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+  }
+}
+
+ray::Status GlobalStateAccessor::GetNodeToConnectForDriver(
+    const std::string &node_ip_address, std::string *node_to_connect) {
+  auto start_ms = current_time_ms();
+  while (true) {
     std::vector<rpc::GcsNodeInfo> nodes;
-    std::copy_if(result.second.begin(), result.second.end(), std::back_inserter(nodes),
-                 [](const rpc::GcsNodeInfo &node) {
-                   return node.state() == rpc::GcsNodeInfo::ALIVE;
-                 });
+    auto status = GetAliveNodes(nodes);
+    if (!status.ok()) {
+      return status;
+    }
 
     if (nodes.empty()) {
       status = Status::NotFound("GCS has started but no raylets have registered yet.");
@@ -350,9 +504,9 @@ ray::Status GlobalStateAccessor::GetNodeToConnectForDriver(
 
       if (relevant_client_index < 0 && head_node_client_index >= 0) {
         RAY_LOG(INFO) << "This node has an IP address of " << node_ip_address
-                      << ", while we can not found the matched Raylet address. "
-                      << "This maybe come from when you connect the Ray cluster "
-                      << "with a different IP address or connect a container.";
+                      << ", but we cannot find a local Raylet with the same address. "
+                      << "This can happen when you connect to the Ray cluster "
+                      << "with a different IP address or when connecting to a container.";
         relevant_client_index = head_node_client_index;
       }
       if (relevant_client_index < 0) {

@@ -2,8 +2,9 @@ package io.ray.runtime.gcs;
 
 import com.google.common.base.Preconditions;
 import io.ray.api.id.ActorId;
+import io.ray.api.id.JobId;
 import io.ray.api.id.PlacementGroupId;
-import io.ray.api.id.UniqueId;
+import io.ray.api.runtimecontext.ActorState;
 import java.util.List;
 
 /** `GlobalStateAccessor` is used for accessing information from GCS. */
@@ -72,19 +73,6 @@ public class GlobalStateAccessor {
     }
   }
 
-  /**
-   * Get node resource info.
-   *
-   * @param nodeId node unique id.
-   * @return A map of node resource info in protobuf schema.
-   */
-  public byte[] getNodeResourceInfo(UniqueId nodeId) {
-    synchronized (GlobalStateAccessor.class) {
-      validateGlobalStateAccessorPointer();
-      return nativeGetNodeResourceInfo(globalStateAccessorNativePointer, nodeId.getBytes());
-    }
-  }
-
   public byte[] getPlacementGroupInfo(PlacementGroupId placementGroupId) {
     synchronized (GlobalStateAccessor.class) {
       validateGlobalStateAccessorPointer();
@@ -115,11 +103,20 @@ public class GlobalStateAccessor {
   }
 
   /** Returns A list of actor info with ActorInfo protobuf schema. */
-  public List<byte[]> getAllActorInfo() {
+  public List<byte[]> getAllActorInfo(JobId jobId, ActorState actorState) {
     // Fetch a actor list with protobuf bytes format from GCS.
     synchronized (GlobalStateAccessor.class) {
       validateGlobalStateAccessorPointer();
-      return this.nativeGetAllActorInfo(globalStateAccessorNativePointer);
+      byte[] jobIdBytes = null;
+      String actorStateName = null;
+      if (jobId != null) {
+        jobIdBytes = jobId.getBytes();
+      }
+      if (actorState != null) {
+        actorStateName = actorState.getName();
+      }
+      return this.nativeGetAllActorInfo(
+          globalStateAccessorNativePointer, jobIdBytes, actorStateName);
     }
   }
 
@@ -163,9 +160,8 @@ public class GlobalStateAccessor {
 
   private native List<byte[]> nativeGetAllNodeInfo(long nativePtr);
 
-  private native byte[] nativeGetNodeResourceInfo(long nativePtr, byte[] nodeId);
-
-  private native List<byte[]> nativeGetAllActorInfo(long nativePtr);
+  private native List<byte[]> nativeGetAllActorInfo(
+      long nativePtr, byte[] jobId, String actorStateName);
 
   private native byte[] nativeGetActorInfo(long nativePtr, byte[] actorId);
 
